@@ -53,7 +53,7 @@ class VCFline:
         self.pos = int(columns[1])
         self.seqid = columns[0]
         self.ref = columns[3]
-        self.alt = columns[4]
+        self.alt = columns[4].split(',')
         self.info = columns[7]
         self.quality = self.get_quality()
         # note, the normal quality column is not used because it seems to be messed up in the vcf of interest
@@ -130,9 +130,11 @@ def main():
     print fasta_dict.keys()
     newfasta = {}
     for key in fasta_dict:
-        newfasta[key] = list(fasta_dict[key])
+        newfasta[key] = ''#list(fasta_dict[key])
 #    newfasta = copy.deepcopy(fasta_dict)
-    for line in reversed(vcf.readlines()):  # todo reversed efficient line by line opening of file
+    previous_pos = 0
+    delta_l = 0
+    for line in vcf.readlines(): #todo the right way 'with file as f...'
         if not line.startswith('#'):
             print line
             v = VCFline(line)
@@ -141,20 +143,25 @@ def main():
             start = v.pos - 1
             end = start + len(v.ref)
             if fasta_dict[v.seqid][start:end] == v.ref:
-                # remove ref
-                del newfasta[v.seqid][start:end]
-                # insert alternate
-                for base in reversed(list(v.alt)):
-                    newfasta[v.seqid].insert(start, base)
+                # add from last change to just before replacement
+                newfasta[v.seqid] += fasta_dict[v.seqid][previous_pos:v.pos]
+                # add alternative
+                newfasta[v.seqid] += v.alt[0]
+                # todo, something about heterozygosity and cases where you don't simply want the first listed
+                # update previous position to start after replacement
+                previous_pos = end
+                # keep track of total change in length for gff
+                delta_l += len(v.alt[0]) - len(v.ref)
+                print delta_l
             else:
-                print fasta_dict[v.seqid][v.pos - 1:(v.pos + len(v.ref) - 1)] + ' where we expected: ' + v.ref
-#                raise Exception("mismatch to reference, REF not at POS in CHROM")
+                print '"' + fasta_dict[v.seqid][start:end] + '" where we expected: "' + v.ref + '"'
+                raise Exception("mismatch to reference, REF not at POS in CHROM")
 
     for id in newfasta:
         fastaout.writelines('>' + id + '\n')
         for subseq in split_seq(newfasta[id], 60):
-            fastaout.writelines(''.join(subseq) + '\n') #todo break seq up by 60 and print all
-
+#            fastaout.writelines(''.join(subseq) + '\n') #todo break seq up by 60 and print all
+            fastaout.writelines(subseq + '\n')
 
 if __name__ == "__main__":
     main()
