@@ -31,31 +31,61 @@ def fasta_to_dict(fasta_str):
             if last_id is not None:
                 fasta_dict[last_id] = seq
             last_id = line.replace('>', '')
+            seq = ''
         elif line != '':
             seq += line
+#    fasta_dict[last_id] = list(seq)
+    fasta_dict[last_id] = seq
     return fasta_dict
+
+
+def lists_match(list1, list2):
+    if len(list1) != len(list2):
+        out = False
+    else:
+        out = all([list1[i] == list2[i] for i in range(len(list1))])
+    return out
 
 
 class VCFline:
     def __init__(self, vcfline_str):
         columns = vcfline_str.rstrip().split('\t')
-        self.pos = columns[1]
+        self.pos = int(columns[1])
         self.seqid = columns[0]
         self.ref = columns[3]
         self.alt = columns[4]
-        self.info = columns[0]
-        self.quality = self.get_quality(self)
+        self.info = columns[7]
+        self.quality = self.get_quality()
         # note, the normal quality column is not used because it seems to be messed up in the vcf of interest
         # instead FQ from info
 
-    def get_quailty(self):
-        pre_quality = re.search('FQ=([\-0-9]*);]')
+    def get_quality(self):
+        pre_quality = re.search('FQ=([\-0-9]*)', self.info)
         # FQ for my gff of interest is the "Phred probability of all samples being the same"
         # nevermind that pred "probability" is not... the way I'd put it
         # appears to be the Phred score for variant call quality (which is reasonable)
         # anyways, you might have to write your own function for your appropriate quality score
-        quality = int(pre_quality)
+        try:
+            quality = int(pre_quality.group(1))
+        except Exception:
+            print pre_quality
+            print self.info + " NO FQ FOUND"
         return quality
+
+
+def split_seq(seq, l):
+    """
+    splits sequence (str) into list with subsequences of length (l)
+    :param seq: list
+    :param l: int
+    :return: list of lists length l
+    """
+    out = []
+    for i in range(0, len(seq), l):
+        upper = min(i + l, len(seq))
+        subseq = seq[i:upper]
+        out += [subseq]
+    return out
 
 
 def main():
@@ -97,17 +127,41 @@ def main():
     fasta = open(refin)
 
     fasta_dict = fasta_to_dict(fasta.read().rstrip())
-    newfasta = copy.deepcopy(fasta_dict)
+    print fasta_dict.keys()
+    newfasta = {}
+    for key in fasta_dict:
+        newfasta[key] = list(fasta_dict[key])
+#    newfasta = copy.deepcopy(fasta_dict)
     for line in reversed(vcf.readlines()):  # todo reversed efficient line by line opening of file
-        v = VCFline(line)
-        # check position
-        if fasta_dict[v.seqid][v.pos:(v.pos + len(v.ref))] == v.ref:
-            newfasta[v.seqid][v.pos:] = newfasta[v.seqid][v.pos].replace(v.ref, v.alt, 1)
-        else:
-            raise Exception("mismatch to reference, REF not at POS in CHROM, line: \n" + line)
+        if not line.startswith('#'):
+            print line
+            v = VCFline(line)
+            reflist = list(v.ref)
+            # check position (-1 because vcf counts from 1 not 0)
+            start = v.pos - 1
+            end = start + len(v.ref)
+            if fasta_dict[v.seqid][start:end] == v.ref:
+                # remove ref
+                del newfasta[v.seqid][start:end]
+                # insert alternate
+                for base in reversed(list(v.alt)):
+                    newfasta[v.seqid].insert(start, base)
+            else:
+                print fasta_dict[v.seqid][v.pos - 1:(v.pos + len(v.ref) - 1)] + ' where we expected: ' + v.ref
+#                raise Exception("mismatch to reference, REF not at POS in CHROM")
+
     for id in newfasta:
-        fastaout.writelines('>' + id)
-        fastaout.writelines(newfasta[id][:60]) #todo break seq up by 60 and print all
+        fastaout.writelines('>' + id + '\n')
+        for subseq in split_seq(newfasta[id], 60):
+            fastaout.writelines(''.join(subseq) + '\n') #todo break seq up by 60 and print all
+
 
 if __name__ == "__main__":
     main()
+    test = list('abc')
+    print test
+    new = ['x', 'y']
+    for item in reversed(new):
+        test.insert(2, item)
+#    test.insert(2,['x','y'])
+    print test
