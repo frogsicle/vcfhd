@@ -3,6 +3,7 @@ import sys
 import getopt
 import re
 import copy
+import intervaltree
 
 
 def usage():
@@ -10,10 +11,9 @@ def usage():
 ###############
 -v | --vcf=             input vcf file
 -r | --reference=       reference fasta file (presumably genomic)
--o | --out=             output_prefix (will be named .fasta, and if -g is set .transcript.fasta and .gff)
+-o | --out=             output_prefix (will be named .fa, and if -g is set and .gff)
 -q | --q_phred=         phred quality threshold (default = 20)
--g | --gff=             reference gff file (if supplied, script will return modified gff and associated transcriptome)
-Note: -g is not yet implemented!
+-g | --gff=             reference gff file (if supplied, script will return modified gff and associated transcriptomei)
 -h | --help             prints this message
 
 Note this is probably quite specific for the VCF produced in the 150 tomato genomes project. But that's what I needed.
@@ -47,6 +47,36 @@ def lists_match(list1, list2):
     return out
 
 
+class Offsets:
+    def __init__(self, status='matching', offset=0):
+        if status in ['matching', 'not-matching']:
+            self.status = status
+        else:
+            raise ValueError('status accepts "matching" or "not-matching" only')
+        self.offset = offset
+
+
+class Gffentry:
+    def __init__(self, line):
+        splitline = line.rstrip().split('\t')
+        self.seqname = splitline[0]
+        self.source = splitline[1] + ',vcfhd'
+        self.feature = splitline[2]
+        self.start = int(splitline[3])
+        self.end = int(splitline[4])
+        self.score = splitline[5]
+        self.strand = splitline[6]
+        self.frame = splitline[7]
+        self.attribute = splitline[8]
+
+    def __str__(self):
+        splitline = [self.seqname, self.source, self.feature, self.start, self.end, self.score, self.strand,
+                     self.frame, self.attribute]
+        splitline = [str(x) for x in splitline]
+        out = '\t'.join(splitline)
+        return out
+
+
 class VCFline:
     def __init__(self, vcfline_str):
         columns = vcfline_str.rstrip().split('\t')
@@ -55,22 +85,7 @@ class VCFline:
         self.ref = columns[3]
         self.alt = columns[4].split(',')
         self.info = columns[7]
-        self.quality = self.get_quality()
-        # note, the normal quality column is not used because it seems to be messed up in the vcf of interest
-        # instead FQ from info
-
-    def get_quality(self):
-        pre_quality = re.search('FQ=([\-0-9]*)', self.info)
-        # FQ for my gff of interest is the "Phred probability of all samples being the same"
-        # nevermind that pred "probability" is not... the way I'd put it
-        # appears to be the Phred score for variant call quality (which is reasonable)
-        # anyways, you might have to write your own function for your appropriate quality score
-        try:
-            quality = int(pre_quality.group(1))
-        except Exception:
-            print pre_quality
-            print self.info + " NO FQ FOUND"
-        return quality
+        self.quality = float(columns[5])
 
 
 def split_seq(seq, l):
@@ -78,7 +93,7 @@ def split_seq(seq, l):
     splits sequence (str) into list with subsequences of length (l)
     :param seq: list
     :param l: int
-    :return: list of lists length l
+    :return: list of strs length l
     """
     out = []
     for i in range(0, len(seq), l):
@@ -93,11 +108,11 @@ def main():
     refin = None
     gffin = None
     fileout = None
-    threshold = 20
+    threshold = 10
     # get opt
     try:
         opts, args = getopt.gnu_getopt(sys.argv[1:], "v:r:g:o:q:h",
-                                       ["vcf=", "reference=", "gff=", "out=", "q_phred=", "help"])
+                                       ["vcf=", "reference=", "gff=", "out=", "quality=", "help"])
     except getopt.GetoptError as err:
         print (str(err))
         usage()
@@ -111,7 +126,7 @@ def main():
             gffin = a
         elif o in ("-o", "--out"):
             fileout = a
-        elif o in ("-q", "--q_phred"):
+        elif o in ("-q", "--quality"):
             threshold = a
         elif o in ("-h", "--help"):
             usage()
@@ -119,10 +134,10 @@ def main():
             assert False, "unhandled option"
 
     if any([x is None for x in [vcfin, refin, fileout]]):
-        print("input fasta required")
+        print("input vcf, reference fasta, and output prefix required")
         usage()
 
-    fastaout = open(fileout, 'w')
+    fastaout = open(fileout + '.fa', 'w')
     vcf = open(vcfin)
     fasta = open(refin)
 
@@ -134,9 +149,10 @@ def main():
 #    newfasta = copy.deepcopy(fasta_dict)
     previous_pos = 0
     delta_l = 0
+    offset_tree = intervaltree.IntervalTree()
     for line in vcf.readlines(): #todo the right way 'with file as f...'
         if not line.startswith('#'):
-            print line
+#            print line
             v = VCFline(line)
             reflist = list(v.ref)
             # check position (-1 because vcf counts from 1 not 0)
@@ -148,27 +164,41 @@ def main():
                 # add alternative
                 newfasta[v.seqid] += v.alt[0]
                 # todo, something about heterozygosity and cases where you don't simply want the first listed
+                # tracking for gff
+                between = Offsets('matching', delta_l)
+                overlap = Offsets('not-matching', delta_l)
+                offset_tree[previous_pos:start] = between
+                offset_tree[start:end] = overlap
                 # update previous position to start after replacement
                 previous_pos = end
                 # keep track of total change in length for gff
                 delta_l += len(v.alt[0]) - len(v.ref)
-                print delta_l
+#                print delta_l
             else:
                 print '"' + fasta_dict[v.seqid][start:end] + '" where we expected: "' + v.ref + '"'
                 raise Exception("mismatch to reference, REF not at POS in CHROM")
 
-    for id in newfasta:
-        fastaout.writelines('>' + id + '\n')
-        for subseq in split_seq(newfasta[id], 60):
-#            fastaout.writelines(''.join(subseq) + '\n') #todo break seq up by 60 and print all
+    if gffin is not None:
+        gfflines = open(gffin).readlines()
+        gffout = open(fileout + '.gff', 'w')
+        for line in gfflines:
+            line = line.rstrip()
+            if not line.startswith('##'):
+                gffentry = Gffentry(line)
+                offsetstart = sorted(offset_tree[gffentry.start])[0]
+                gffentry.start += offsetstart.data.offset
+                offsetend = sorted(offset_tree[gffentry.end])[0]
+                gffentry.end += offsetend.data.offset
+                gffout.writelines(str(gffentry) + '\n')
+            elif line.find('annot-version') > -1:
+                gffout.writelines(line + '-modified_with_vcfhd' + '\n')  # todo, better annotation version update
+            else:
+                gffout.writelines(line + '\n')
+
+    for seqid in newfasta:
+        fastaout.writelines('>' + seqid + '\n')
+        for subseq in split_seq(newfasta[seqid], 60):
             fastaout.writelines(subseq + '\n')
 
 if __name__ == "__main__":
     main()
-    test = list('abc')
-    print test
-    new = ['x', 'y']
-    for item in reversed(new):
-        test.insert(2, item)
-#    test.insert(2,['x','y'])
-    print test
