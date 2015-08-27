@@ -39,6 +39,23 @@ def fasta_to_dict(fasta_str):
     return fasta_dict
 
 
+def gff_to_tree(gff_file):
+    gff_tree = intervaltree.IntervalTree()
+    gfflines = open(gff_file).readlines()
+    first_gene = True
+    for line in gfflines:
+        line = line.rstrip()
+        g = Gffentry(line)
+        if g.feature == 'gene':
+            if not first_gene:
+                gff_tree.addi(lastg.start, lastg.end, lastg)
+            lastg = GffGene(g)
+        else:
+            lastg.addentry(g)
+    return gff_tree
+
+
+
 def lists_match(list1, list2):
     if len(list1) != len(list2):
         out = False
@@ -113,6 +130,9 @@ class Mrna:
         self.variants = []
 
     def addentry(self, gffentry):
+        """
+        adds gffentry (from line of gff file) to Mrna object
+        """
         if gffentry.feature in ['gene', 'mRNA']:
             raise ValueError('cannot add gene nor mRNA feature to mRNA')
         elif gffentry.feature == 'exon':
@@ -121,15 +141,21 @@ class Mrna:
             self.annos += [gffentry]
 
     def apply_variants(self, variants, mode='alternate'):
-        # mode alternate
+        # mode alternate, phased, or pseudo-phased
         pass
 
     def recalc_cds(self):
+        """
+        finds largest open reading frame in resulting mRNA
+        """
         pass
 
     def recalc_splicing(self):
+        """
+        catches disruptions to the 'almost invariant' part of splice signal (exon:GU-intron-AG:exon)
+        includes intron
+        """
         pass
-
 
 
 class VCFline:
@@ -141,6 +167,7 @@ class VCFline:
         self.alt = columns[4].split(',')
         self.info = columns[7]
         self.quality = float(columns[5])
+        # todo self.phazing = something from self.info
 
 
 def split_seq(seq, l):
@@ -202,6 +229,8 @@ def main():
     for key in fasta_dict:
         newfasta[key] = ''#list(fasta_dict[key])
 #    newfasta = copy.deepcopy(fasta_dict)
+    gff_tree = gff_to_tree(gffin)
+
     previous_pos = 0
     delta_l = 0
     offset_tree = intervaltree.IntervalTree()
@@ -218,16 +247,8 @@ def main():
                     # add alternative
                     newfasta[v.seqid] += v.alt[0]
                     # todo, something about heterozygosity and cases where you don't simply want the first listed
-                    # tracking offset intervals for gff
-                    overlap = Offsets('not-matching', delta_l)
-                    between = Offsets('matching', delta_l)
-                    delta_l += len(v.alt[0]) - len(v.ref) #todo, does it make sense to first change length after alt?
-                else:
-                    overlap = Offsets('matching', delta_l)
-                    between = Offsets('matching', delta_l)
-                # save offset intervals for gff
-                offset_tree[previous_pos:start] = between
-                offset_tree[start:end] = overlap
+                    #TODO was sitting here thinking about how to incorporate gff best continuously
+                    delta_l += len(v.alt[0]) - len(v.ref)
                 # update previous position to start after replacement
                 previous_pos = end
                 # keep track of total change in length for gff

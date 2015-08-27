@@ -108,7 +108,7 @@ def main():
     refin = None
     gffin = None
     fileout = None
-    threshold = 10
+    threshold = 0
     # get opt
     try:
         opts, args = getopt.gnu_getopt(sys.argv[1:], "v:r:g:o:q:h",
@@ -142,7 +142,7 @@ def main():
     fasta = open(refin)
 
     fasta_dict = fasta_to_dict(fasta.read().rstrip())
-    print fasta_dict.keys()
+
     newfasta = {}
     for key in fasta_dict:
         newfasta[key] = ''#list(fasta_dict[key])
@@ -152,27 +152,31 @@ def main():
     offset_tree = intervaltree.IntervalTree()
     for line in vcf.readlines(): #todo the right way 'with file as f...'
         if not line.startswith('#'):
-#            print line
             v = VCFline(line)
-            reflist = list(v.ref)
             # check position (-1 because vcf counts from 1 not 0)
             start = v.pos - 1
             end = start + len(v.ref)
-            if fasta_dict[v.seqid][start:end] == v.ref:
-                # add from last change to just before replacement
-                newfasta[v.seqid] += fasta_dict[v.seqid][previous_pos:v.pos]
-                # add alternative
-                newfasta[v.seqid] += v.alt[0]
-                # todo, something about heterozygosity and cases where you don't simply want the first listed
-                # tracking for gff
-                between = Offsets('matching', delta_l)
-                overlap = Offsets('not-matching', delta_l)
+            if fasta_dict[v.seqid][start:end].upper() == v.ref.upper():
+                if v.quality >= threshold:
+                    # add from last change to just before replacement
+                    newfasta[v.seqid] += fasta_dict[v.seqid][previous_pos:v.pos]
+                    # add alternative
+                    newfasta[v.seqid] += v.alt[0]
+                    # todo, something about heterozygosity and cases where you don't simply want the first listed
+                    # tracking offset intervals for gff
+                    overlap = Offsets('not-matching', delta_l)
+                    between = Offsets('matching', delta_l)
+                    delta_l += len(v.alt[0]) - len(v.ref) #todo, does it make sense to first change length after alt?
+                else:
+                    overlap = Offsets('matching', delta_l)
+                    between = Offsets('matching', delta_l)
+                # save offset intervals for gff
                 offset_tree[previous_pos:start] = between
                 offset_tree[start:end] = overlap
                 # update previous position to start after replacement
                 previous_pos = end
                 # keep track of total change in length for gff
-                delta_l += len(v.alt[0]) - len(v.ref)
+
 #                print delta_l
             else:
                 print '"' + fasta_dict[v.seqid][start:end] + '" where we expected: "' + v.ref + '"'
